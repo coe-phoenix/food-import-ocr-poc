@@ -11,7 +11,7 @@
   h1 { font-size: 2rem; margin-bottom: .25rem; background: linear-gradient(135deg, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .subtitle { color: #94a3b8; margin-bottom: 2rem; font-size: .95rem; }
   .dropzone { border: 2px dashed #334155; border-radius: 16px; padding: 3rem 2rem; cursor: pointer; transition: all .2s; background: #1e293b; }
-  .dropzone:hover, .dropzone.active { border-color: #38bdf8; background: #1e293b; box-shadow: 0 0 30px rgba(56,189,248,.1); }
+  .dropzone:hover, .dropzone.active { border-color: #38bdf8; box-shadow: 0 0 30px rgba(56,189,248,.1); }
   .dropzone svg { width: 48px; height: 48px; margin-bottom: 1rem; color: #38bdf8; }
   .dropzone p { color: #94a3b8; }
   .dropzone .hint { font-size: .8rem; margin-top: .5rem; color: #475569; }
@@ -28,17 +28,17 @@
 <body>
 <div class="container">
   <h1>Delivery Order Extractor</h1>
-  <p class="subtitle">Upload a delivery order image &rarr; get a structured Excel file</p>
+  <p class="subtitle">Upload a delivery order image or PDF &rarr; get a structured Excel file</p>
 
   <div class="dropzone" id="dropzone">
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
-    <p>Drag & drop your image here</p>
-    <p class="hint">or click to browse — JPG, PNG, PDF</p>
+    <p>Drag & drop your file here</p>
+    <p class="hint">or click to browse — JPG, PNG, WebP, PDF</p>
   </div>
-  <input type="file" id="fileInput" accept="image/*,.pdf">
+  <input type="file" id="fileInput" accept="image/jpeg,image/png,image/gif,image/webp,application/pdf">
 
   <div class="status" id="status"></div>
-  <footer>Food Import OCR POC &bull; Simulated AI Extraction</footer>
+  <footer>Food Import OCR POC &bull; Powered by Claude Vision AI</footer>
 </div>
 
 <script>
@@ -58,20 +58,24 @@ fileInput.addEventListener('change', () => { if (fileInput.files.length) handleF
 
 async function handleFile(file) {
   status.className = 'status processing';
-  status.innerHTML = '<span class="spinner"></span> Extracting data from image…';
+  status.innerHTML = '<span class="spinner"></span> Sending to Claude Vision for extraction… (may take 10-20s)';
 
   const fd = new FormData();
-  fd.append('image', file);
+  fd.append('file', file);
 
   try {
     const res = await fetch('/upload', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error('Server error');
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Unknown server error' }));
+      throw new Error(err.error || `Server error ${res.status}`);
+    }
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = res.headers.get('content-disposition')?.match(/filename=\"(.+)\"/)?.[1] || 'delivery-order.xlsx';
+    a.download = res.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'delivery-order.xlsx';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -81,7 +85,7 @@ async function handleFile(file) {
     status.textContent = '✓ Excel file downloaded successfully!';
   } catch (err) {
     status.className = 'status error';
-    status.textContent = '✗ Upload failed — ' + err.message;
+    status.textContent = '✗ ' + err.message;
   }
 }
 </script>

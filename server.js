@@ -2,8 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
-const Anthropic = require('@anthropic-ai/sdk');
+const AnthropicModule = require('@anthropic-ai/sdk');
 const path = require('path');
+
+const Anthropic = AnthropicModule.default || AnthropicModule;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,42 +16,58 @@ const anthropic = new Anthropic({
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 // ---------- Serve frontend ----------
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ---------- Claude Vision extraction ----------
-async function extractDeliveryOrder(imageBuffer, mimeType) {
-  const base64Image = imageBuffer.toString('base64');
+async function extractDeliveryOrder(fileBuffer, mimeType) {
+  const base64Data = fileBuffer.toString('base64');
+
+  // Build the content block based on file type
+  let fileContent;
+  if (mimeType === 'application/pdf') {
+    fileContent = {
+      type: 'document',
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: base64Data,
+      },
+    };
+  } else {
+    fileContent = {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: mimeType,
+        data: base64Data,
+      },
+    };
+  }
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [
       {
         role: 'user',
         content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType,
-              data: base64Image,
-            },
-          },
+          fileContent,
           {
             type: 'text',
             text: `You are a data extraction assistant for a food import company.
 
-Analyze this delivery order / invoice image and extract ALL data you can find.
+Analyze this delivery order / invoice document and extract ALL data you can find.
 
 Return ONLY valid JSON in this exact format (no markdown, no backticks, no explanation):
 {
   "supplierName": "<supplier/vendor name or 'Unknown'>",
   "deliveryDate": "<date in YYYY-MM-DD format or today's date if not found>",
   "poNumber": "<PO/invoice/DO number or 'N/A'>",
+  "currency": "<currency code like USD, MYR, SGD, etc. or 'USD' if not found>",
   "items": [
     {
       "item": "<item description>",
@@ -75,37 +93,36 @@ Rules:
   });
 
   const raw = response.content[0].text.trim();
-
-  // Strip markdown code fences if Claude wraps them
   const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
 
   return JSON.parse(cleaned);
 }
 
 // ---------- POST /upload ----------
-app.post('/upload', upload.single('image'), async (req, res) => {
+app.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    // Determine MIME type
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     const mimeType = req.file.mimetype;
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+
     if (!allowedTypes.includes(mimeType)) {
-      return res.status(400).json({ error: `Unsupported file type: ${mimeType}. Use JPG, PNG, GIF, or WebP.` });
+      return res.status(400).json({
+        error: `Unsupported file type: ${mimeType}. Use JPG, PNG, GIF, WebP, or PDF.`,
+      });
     }
 
-    // Call Claude Vision to extract structured data
-    console.log(`Processing: ${req.file.originalname} (${(req.file.size / 1024).toFixed(1)} KB)`);
+    console.log(`Processing: ${req.file.originalname} (${(req.file.size / 1024).toFixed(1)} KB, ${mimeType})`);
     const extractedData = await extractDeliveryOrder(req.file.buffer, mimeType);
     console.log(`Extracted ${extractedData.items.length} line items from ${req.file.originalname}`);
 
     const grandTotal = extractedData.items.reduce((s, i) => s + (i.totalPrice || 0), 0);
+    const currency = extractedData.currency || 'USD';
 
     // --- Build Excel workbook ---
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Delivery Order');
 
-    // Header info
     ws.mergeCells('A1:F1');
     ws.getCell('A1').value = 'DELIVERY ORDER — AI EXTRACTED DATA';
     ws.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FF1A73E8' } };
@@ -125,9 +142,8 @@ app.post('/upload', upload.single('image'), async (req, res) => {
     ws.getCell('B7').value = 'Claude Vision AI';
     ws.getCell('B7').font = { italic: true, color: { argb: 'FF6B7280' } };
 
-    // Table headers
     ws.addRow([]);
-    const tableHeader = ws.addRow(['#', 'Item Description', 'Qty', 'Unit', 'Unit Price', 'Total Price']);
+    const tableHeader = ws.addRow(['#', 'Item Description', 'Qty', 'Unit', `Unit Price (${currency})`, `Total Price (${currency})`]);
     tableHeader.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     tableHeader.eachCell((cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A73E8' } };
@@ -135,7 +151,6 @@ app.post('/upload', upload.single('image'), async (req, res) => {
       cell.border = { bottom: { style: 'thin' } };
     });
 
-    // Data rows
     extractedData.items.forEach((item, idx) => {
       const row = ws.addRow([
         idx + 1,
@@ -154,23 +169,20 @@ app.post('/upload', upload.single('image'), async (req, res) => {
       }
     });
 
-    // Grand total
     const totalRow = ws.addRow(['', '', '', '', 'GRAND TOTAL', grandTotal]);
     totalRow.font = { bold: true, size: 12 };
     totalRow.getCell(6).numFmt = '#,##0.00';
     totalRow.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE082' } };
 
-    // Column widths
     ws.columns = [
       { width: 5 },
       { width: 40 },
       { width: 8 },
       { width: 8 },
-      { width: 15 },
-      { width: 15 },
+      { width: 18 },
+      { width: 18 },
     ];
 
-    // Send as download
     const buffer = await wb.xlsx.writeBuffer();
     const safePoNumber = (extractedData.poNumber || 'extracted').replace(/[^a-zA-Z0-9-_]/g, '-');
     const filename = `delivery-order-${safePoNumber}.xlsx`;
