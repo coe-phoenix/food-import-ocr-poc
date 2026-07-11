@@ -26,7 +26,6 @@ app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 async function extractDeliveryOrder(fileBuffer, mimeType) {
   const base64Data = fileBuffer.toString('base64');
 
-  // Build the content block based on file type
   let fileContent;
   if (mimeType === 'application/pdf') {
     fileContent = {
@@ -49,7 +48,7 @@ async function extractDeliveryOrder(fileBuffer, mimeType) {
   }
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     messages: [
       {
@@ -195,6 +194,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     if (err.status === 401) {
       return res.status(500).json({ error: 'Invalid Anthropic API key. Check your .env file.' });
+    }
+    if (err.status === 404) {
+      return res.status(500).json({ error: 'Model not found. Check the model ID in server.js.' });
     }
     if (err instanceof SyntaxError) {
       return res.status(500).json({ error: 'AI returned unparseable data. Try a clearer image.' });
